@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: docker://ghcr.io/maubot/ci:latest
+    runs-on: docker
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
