@@ -56,4 +56,5 @@ All commands require the sender to appear in `whitelist`.
 
 - Publishing a release (or running the workflow manually) triggers `.forgejo/workflows/build.yml`.
 - The workflow runs `./worker build`, renames the archive to `mas-tokenbot-<tag>.mbp`, and uploads it as both a release asset and a workflow artifact.
+- Forgejo normally injects a `GITHUB_TOKEN`/`GITEA_TOKEN` for release uploads; if your instance disables it, provide a personal access token via repository secrets.
 - Adjust the `runs-on` label in the workflow if your Forgejo runner advertises a different name or does not support the default container image.

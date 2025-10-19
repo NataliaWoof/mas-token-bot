@@ -48,9 +48,63 @@ jobs:
 
       - name: Upload release asset
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/mas-tokenbot-${{ steps.meta.outputs.tag }}.mbp
+        env:
+          ASSET_PATH: dist/mas-tokenbot-${{ steps.meta.outputs.tag }}.mbp
+          RELEASE_ID: ${{ github.event.release.id }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          TOKEN: ${{ github.token }}
+          ALT_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: |
+          TOKEN_VALUE="${TOKEN:-${ALT_TOKEN:-}}"
+          if [ -z "$TOKEN_VALUE" ]; then
+            echo "No token available in GITHUB_TOKEN or GITEA_TOKEN; cannot upload asset." >&2
+            exit 1
+          fi
+          export TOKEN_VALUE
+          python3 <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+from urllib import request, parse, error
+
+asset_path = Path(os.environ["ASSET_PATH"])
+if not asset_path.exists():
+    raise SystemExit(f"Asset not found: {asset_path}")
+
+server_url = os.environ["SERVER_URL"].rstrip("/")
+repository = os.environ["REPOSITORY"]
+release_id = os.environ["RELEASE_ID"]
+token = os.environ["TOKEN_VALUE"]
+
+api_base = f"{server_url}/api/v1/repos/{repository}/releases/{release_id}"
+headers = {"Authorization": f"token {token}"}
+
+def api_call(url, method="GET", data=None, content_type=None):
+    req = request.Request(url, data=data, method=method, headers=headers)
+    if content_type:
+        req.add_header("Content-Type", content_type)
+    try:
+        with request.urlopen(req) as resp:
+            return resp.read()
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        raise SystemExit(f"{exc.code} {exc.reason}: {body}")
+
+assets_raw = api_call(f"{api_base}/assets")
+assets = json.loads(assets_raw.decode("utf-8"))
+for item in assets:
+    if item.get("name") == asset_path.name:
+        api_call(f"{api_base}/assets/{item['id']}", method="DELETE")
+
+with asset_path.open("rb") as fh:
+    data = fh.read()
+api_call(f"{api_base}/assets?name={parse.quote(asset_path.name)}",
+         method="POST",
+         data=data,
+         content_type="application/octet-stream")
+PY
 
       - name: Upload artifact
         uses: actions/upload-artifact@v3
