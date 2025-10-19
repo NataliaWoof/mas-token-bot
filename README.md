@@ -116,9 +116,3 @@ Reload or restart the service so the new client is picked up (for example `syste
 The bot will use these credentials to fetch and refresh short-lived access tokens automatically.
 - Optional: list room IDs under `room_whitelist` if you want everyone in specific rooms to use the bot without adding each user to `whitelist`.
 
-## Release Automation
-
-- Publishing a release (or running the workflow manually) triggers `.forgejo/workflows/build.yml`.
-- The workflow runs `./worker build`, renames the archive to `mas-tokenbot-<tag>.mbp`, and uploads it as both a release asset (via the Forgejo REST API) and a workflow artifact.
-- Forgejo normally injects a `GITHUB_TOKEN`/`GITEA_TOKEN` for release uploads; if your instance disables it, provide a personal access token via repository secrets.
-- Adjust the `runs-on` label in the workflow if your Forgejo runner advertises a different name or does not support the default container image.
