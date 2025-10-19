@@ -33,12 +33,12 @@ All commands require the sender to appear in `whitelist`.
 
 Follow these five small steps to give the bot MAS admin access without touching any interactive flows.
 
-1. **Generate a client ID and secret**
+**Step 1 – Generate a client ID and secret**
 
-   Run once on any machine with Python:
+Run once on any machine with Python:
 
-   ```bash
-   python3 - <<'PY'
+```bash
+python3 - <<'PY'
 import secrets
 alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 client_id = "".join(secrets.choice(alphabet) for _ in range(26))
@@ -46,69 +46,69 @@ client_secret = secrets.token_urlsafe(32)
 print(f"CLIENT_ID={client_id}")
 print(f"CLIENT_SECRET={client_secret}")
 PY
-   ```
+```
 
-   Copy the two lines that are printed; you will paste them in the next steps.
+Copy the two lines that are printed; you will paste them in the next steps.
 
-2. **Add the client to MAS**
+**Step 2 – Add the client to MAS**
 
-   Open your MAS configuration file (often `/etc/mas/config.yaml`) and add the client by hand:
+Open your MAS configuration file (often `/etc/mas/config.yaml`) and add the client by hand:
 
-   ```yaml
-   clients:
-     - client_id: "PASTE_CLIENT_ID_HERE"
-       client_auth_method: client_secret_basic
-       client_secret: "PASTE_CLIENT_SECRET_HERE"
+```yaml
+clients:
+  - client_id: "PASTE_CLIENT_ID_HERE"
+    client_auth_method: client_secret_basic
+    client_secret: "PASTE_CLIENT_SECRET_HERE"
 
-   policy:
-     data:
-       admin_clients:
-         - "PASTE_CLIENT_ID_HERE"
-   ```
+policy:
+  data:
+    admin_clients:
+      - "PASTE_CLIENT_ID_HERE"
+```
 
-   Append to existing `clients` or `policy.data.admin_clients` lists instead of duplicating keys.
+Append to existing `clients` or `policy.data.admin_clients` lists instead of duplicating keys.
 
-3. **Expose the admin API (skip if already configured)**
+**Step 3 – Expose the admin API (skip if already configured)**
 
-   Ensure at least one listener lists the `adminapi` resource:
+Ensure at least one listener lists the `adminapi` resource:
 
-   ```yaml
-   http:
-     listeners:
-       - name: web
-         resources:
-           - name: discovery
-           - name: adminapi
-         binds:
-           - address: "[::]:8080"
-   ```
+```yaml
+http:
+  listeners:
+    - name: web
+      resources:
+        - name: discovery
+        - name: adminapi
+      binds:
+        - address: "[::]:8080"
+```
 
-4. **Restart MAS**
+**Step 4 – Restart MAS**
 
-   Reload or restart the service so the new client is picked up (for example `systemctl restart mas`).
+Reload or restart the service so the new client is picked up (for example `systemctl restart mas`).
 
-5. **Fetch the admin access token**
+**Step 5 – Fetch the admin access token**
 
-   ```bash
-   MAS_BASE=https://mas.example.com
-   CLIENT_ID=the_value_you_generated
-   CLIENT_SECRET=the_value_you_generated
+```bash
+MAS_BASE=https://mas.example.com
+CLIENT_ID=the_value_you_generated
+CLIENT_SECRET=the_value_you_generated
 
-   ACCESS_TOKEN=$(
-     curl -s \
-       -u "$CLIENT_ID:$CLIENT_SECRET" \
-       -d "grant_type=client_credentials&scope=urn:mas:admin" \
-       "$MAS_BASE/oauth2/token" | jq -r '.access_token'
-   )
-   ```
+ACCESS_TOKEN=$(
+  curl -s \
+    -u "$CLIENT_ID:$CLIENT_SECRET" \
+    -d "grant_type=client_credentials&scope=urn:mas:admin" \
+    "$MAS_BASE/oauth2/token" | jq -r '.access_token'
+)
+```
 
-   - Paste the token into `base-config.yaml` (`access_token` field) or your secret manager.
-   - Verify it once before deploying:
+- Paste the token into `base-config.yaml` (`access_token` field) or your secret manager.
+- Verify it once before deploying:
 
-     ```bash
-     curl -H "Authorization: Bearer $ACCESS_TOKEN" \
-       "$MAS_BASE/api/admin/v1/user-registration-tokens"
-     ```
+  ```bash
+  curl -H "Authorization: Bearer $ACCESS_TOKEN" \
+    "$MAS_BASE/api/admin/v1/user-registration-tokens"
+  ```
 
 ## Release Automation
 
