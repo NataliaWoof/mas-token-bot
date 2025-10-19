@@ -1,10 +1,13 @@
 name: Build plugin archive
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types:
+      - published
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -23,8 +26,34 @@ jobs:
           chmod +x worker
           ./worker build --out dist
 
+      - name: Determine release tag
+        id: meta
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            TAG="$RELEASE_TAG"
+          elif [ -n "${GITHUB_REF_NAME:-}" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="manual"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Rename archive
+        run: |
+          DEST="dist/mas-tokenbot-${{ steps.meta.outputs.tag }}.mbp"
+          SRC="$(echo dist/*.mbp)"
+          mv "$SRC" "$DEST"
+
+      - name: Upload release asset
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/mas-tokenbot-${{ steps.meta.outputs.tag }}.mbp
+
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: maubot-plugin
-          path: dist/*.mbp
+          name: mas-tokenbot-${{ steps.meta.outputs.tag }}
+          path: dist/mas-tokenbot-${{ steps.meta.outputs.tag }}.mbp
