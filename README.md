@@ -25,7 +25,8 @@ All commands require the sender to appear in `whitelist`.
 ## Configuration
 
 - `admin_api` must point at your MAS admin base URL, e.g. `https://mas.example.com/api/admin`.
-- `access_token` requires an MAS admin API token (see MAS docs for issuing and scoping).
+- `whitelist` lists individual Matrix IDs allowed to use the bot anywhere; `room_whitelist` lists room IDs where anyone present may use the commands.
+- `token_url`, `client_id`, and `client_secret` let the bot fetch MAS admin tokens automatically (see the quick guide below).
 - `default_uses_allowed` and `default_expiry_time` act as fallbacks when `generate` arguments are omitted.
 - `base_command` allows renaming the root command if `!token` conflicts with other bots.
 
@@ -59,6 +60,10 @@ clients:
   - client_id: "PASTE_CLIENT_ID_HERE"
     client_auth_method: client_secret_basic
     client_secret: "PASTE_CLIENT_SECRET_HERE"
+    grants:
+      - client_credentials
+    scopes:
+      - "urn:mas:admin"
 
 policy:
   data:
@@ -85,30 +90,31 @@ http:
 
 **Step 4 – Restart MAS**
 
-Reload or restart the service so the new client is picked up (for example `systemctl restart mas`).
+Reload or restart the service so the new client is picked up (for example `systemctl restart mas`), then run `mas-cli config sync` (inside your container if you use Docker) so the database reflects the new client settings.
 
-**Step 5 – Fetch the admin access token**
+**Step 5 – Point the bot at MAS**
 
-```bash
-MAS_BASE=https://mas.example.com
-CLIENT_ID=the_value_you_generated
-CLIENT_SECRET=the_value_you_generated
-
-ACCESS_TOKEN=$(
-  curl -s \
-    -u "$CLIENT_ID:$CLIENT_SECRET" \
-    -d "grant_type=client_credentials&scope=urn:mas:admin" \
-    "$MAS_BASE/oauth2/token" | jq -r '.access_token'
-)
-```
-
-- Paste the token into `base-config.yaml` (`access_token` field) or your secret manager.
-- Verify it once before deploying:
+- Set `token_url`, `client_id`, `client_secret`, and `token_scope` (usually `urn:mas:admin`) in `base-config.yaml`.
+- Optional but recommended: verify the credentials still work with a direct token request and a test call:
 
   ```bash
+  MAS_BASE=https://mas.example.com
+  CLIENT_ID=the_value_you_generated
+  CLIENT_SECRET=the_value_you_generated
+
+  ACCESS_TOKEN=$(
+    curl -s \
+      -u "$CLIENT_ID:$CLIENT_SECRET" \
+      -d "grant_type=client_credentials&scope=urn:mas:admin" \
+      "$MAS_BASE/oauth2/token" | jq -r '.access_token'
+  )
+
   curl -H "Authorization: Bearer $ACCESS_TOKEN" \
     "$MAS_BASE/api/admin/v1/user-registration-tokens"
   ```
+
+The bot will use these credentials to fetch and refresh short-lived access tokens automatically.
+- Optional: list room IDs under `room_whitelist` if you want everyone in specific rooms to use the bot without adding each user to `whitelist`.
 
 ## Release Automation
 

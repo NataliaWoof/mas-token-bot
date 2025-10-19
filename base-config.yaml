@@ -1,7 +1,12 @@
-# Access Token of any Admin
-access_token: ""
 # Base URL for the MAS admin API (without the trailing /v1 portion)
 admin_api: "https://mas.example.com/api/admin"
+# OAuth2 token endpoint for MAS
+token_url: "https://mas.example.com/oauth2/token"
+# OAuth client credentials for MAS admin API access
+client_id: ""
+client_secret: ""
+# Scope requested when fetching access tokens
+token_scope: "urn:mas:admin"
 # Base command without the prefix (!).
 base_command: token
 # Default allowed uses per token
@@ -12,3 +17,6 @@ default_expiry_time: 604800
 # sandboxing in maubot or this plugin, keep this list small.
 whitelist:
 - '@user:example.com'
+# Optional list of room IDs whose members may use the bot in-room.
+room_whitelist:
+- '!roomid:example.com'

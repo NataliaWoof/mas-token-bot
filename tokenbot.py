@@ -18,8 +18,11 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command
 
+import asyncio
+import base64
 import json
 import datetime
+import time
 from typing import Any, Dict, List, Optional, Tuple, Type
 from urllib.parse import urljoin
 
@@ -39,10 +42,14 @@ token_msg = """
 class Config(BaseProxyConfig):
 
     def do_update(self, helper: ConfigUpdateHelper) -> None:
-        helper.copy("access_token")
         helper.copy("base_command")
         helper.copy("whitelist")
+        helper.copy("room_whitelist")
         helper.copy("admin_api")
+        helper.copy("token_url")
+        helper.copy("client_id")
+        helper.copy("client_secret")
+        helper.copy("token_scope")
         helper.copy("default_uses_allowed")
         helper.copy("default_expiry_time")
 
@@ -120,8 +127,13 @@ def _format_error_message(error: Any) -> str:
 
 class TokenBot(Plugin):
 
-    def authenticate(self, user):
-        if user in self.config["whitelist"]:
+    def authenticate(self, event: MessageEvent) -> bool:
+        user_whitelist = set(self.config.get("whitelist", []))
+        room_whitelist = set(self.config.get("room_whitelist", []))
+        if event.sender in user_whitelist:
+            return True
+        room_id = getattr(event, "room_id", None)
+        if room_id and room_id in room_whitelist:
             return True
         return False
 
@@ -131,15 +143,77 @@ class TokenBot(Plugin):
 
     async def start(self) -> None:
         self.config.load_and_update()
+        self._access_token: Optional[str] = None
+        self._access_token_expiry: float = 0.0
+        self._token_lock = asyncio.Lock()
+
+    def _build_token_auth_header(self) -> str:
+        creds = "{}:{}".format(self.config["client_id"],
+                               self.config["client_secret"]).encode("utf-8")
+        encoded = base64.b64encode(creds).decode("ascii")
+        return f"Basic {encoded}"
+
+    async def _fetch_access_token(self) -> Tuple[bool, Any]:
+        headers = {
+            "Authorization": self._build_token_auth_header(),
+            "content-type": "application/x-www-form-urlencoded",
+        }
+        body = "grant_type=client_credentials&scope={}".format(
+            self.config["token_scope"])
+        response = await self.http.post(self.config["token_url"],
+                                        data=body,
+                                        headers=headers)
+        if response.status >= 400:
+            try:
+                payload = await response.json()
+                message = payload.get("error_description") or payload.get(
+                    "error") or ""
+            except Exception:
+                message = await response.text()
+            return False, {
+                "status": response.status,
+                "message":
+                message or "Failed to obtain MAS access token."
+            }
+        data = await response.json()
+        token = data.get("access_token")
+        expires_in = data.get("expires_in", 300)
+        if not token:
+            return False, {
+                "status":
+                response.status,
+                "message":
+                "MAS token response did not include access_token."
+            }
+        # Cache with a small safety margin.
+        self._access_token = token
+        self._access_token_expiry = time.time() + max(int(expires_in) - 30, 0)
+        return True, token
+
+    async def _get_access_token(self) -> Tuple[bool, Any]:
+        async with self._token_lock:
+            if (self._access_token
+                    and time.time() < self._access_token_expiry):
+                return True, self._access_token
+            self._access_token = None
+            self._access_token_expiry = 0.0
+            return await self._fetch_access_token()
+
+    def _invalidate_cached_token(self) -> None:
+        self._access_token = None
+        self._access_token_expiry = 0.0
 
     async def _mas_request(self,
                            method: str,
                            base_url: str,
-                           access_token: str,
                            path: str,
                            body: Optional[Dict[str, Any]] = None,
-                           params: Optional[Dict[str, Any]] = None
-                           ) -> Tuple[bool, Any]:
+                           params: Optional[Dict[str, Any]] = None,
+                           allow_retry: bool = True) -> Tuple[bool, Any]:
+        token_ok, token_or_error = await self._get_access_token()
+        if not token_ok:
+            return False, token_or_error
+        access_token: str = token_or_error
         if not path.startswith("http"):
             if not path.startswith("/"):
                 path = "/" + path
@@ -156,6 +230,17 @@ class TokenBot(Plugin):
         if response.status == 204:
             return True, None
         if response.status >= 400:
+            if response.status == 401 and allow_retry:
+                # Token likely expired earlier than expected; refresh and retry once.
+                self._invalidate_cached_token()
+                retry_ok, _ = await self._get_access_token()
+                if retry_ok:
+                    return await self._mas_request(method,
+                                                   base_url,
+                                                   path,
+                                                   body=body,
+                                                   params=params,
+                                                   allow_retry=False)
             try:
                 error_payload = await response.json()
                 if isinstance(error_payload, dict) and "errors" in error_payload:
@@ -178,16 +263,13 @@ class TokenBot(Plugin):
                 "message": text or "Failed to decode JSON response"
             }
 
-    async def _collect_tokens(
-            self, base_url: str,
-            access_token: str) -> Tuple[bool, Any]:
+    async def _collect_tokens(self, base_url: str) -> Tuple[bool, Any]:
         tokens: List[Dict[str, Any]] = []
         path: Optional[str] = "/v1/user-registration-tokens"
         params: Optional[Dict[str, Any]] = {"page[first]": 100}
         while path:
             ret, payload = await self._mas_request("get",
                                                    base_url,
-                                                   access_token,
                                                    path,
                                                    params=params)
             if not ret:
@@ -203,20 +285,18 @@ class TokenBot(Plugin):
                 path = None
         return True, tokens
 
-    async def _get_token(self, base_url: str, access_token: str,
+    async def _get_token(self, base_url: str,
                          identifier: Optional[str]):
         if identifier:
             # First try by ID.
             ret, payload = await self._mas_request(
-                "get", base_url, access_token,
-                f"/v1/user-registration-tokens/{identifier}")
+                "get", base_url, f"/v1/user-registration-tokens/{identifier}")
             if ret:
                 return True, payload.get("data")
             if payload.get("status") != 404:
                 return False, payload
             # Fallback to search by token string.
-        ret, tokens_or_error = await self._collect_tokens(base_url,
-                                                          access_token)
+        ret, tokens_or_error = await self._collect_tokens(base_url)
         if not ret:
             return False, tokens_or_error
         if not identifier:
@@ -230,7 +310,7 @@ class TokenBot(Plugin):
             "message": f"Registration token '{identifier}' not found."
         }
 
-    async def _gen_token(self, base_url: str, access_token: str,
+    async def _gen_token(self, base_url: str,
                          uses_allowed: Optional[int],
                          expiry_seconds: Optional[int]):
         payload: Dict[str, Any] = {}
@@ -242,22 +322,22 @@ class TokenBot(Plugin):
             payload["expires_at"] = expires_at.replace(
                 microsecond=0).isoformat().replace("+00:00", "Z")
         ret, response = await self._mas_request(
-            "post", base_url, access_token,
+            "post", base_url,
             "/v1/user-registration-tokens", body=payload)
         if not ret:
             return False, response
         return True, response.get("data")
 
-    async def _revoke_token(self, base_url: str, access_token: str,
+    async def _revoke_token(self, base_url: str,
                             resource_id: str):
         return await self._mas_request(
-            "post", base_url, access_token,
+            "post", base_url,
             f"/v1/user-registration-tokens/{resource_id}/revoke")
 
-    async def _unrevoke_token(self, base_url: str, access_token: str,
+    async def _unrevoke_token(self, base_url: str,
                               resource_id: str):
         return await self._mas_request(
-            "post", base_url, access_token,
+            "post", base_url,
             f"/v1/user-registration-tokens/{resource_id}/unrevoke")
 
     @command.new(name=lambda self: self.config["base_command"],
@@ -269,12 +349,12 @@ class TokenBot(Plugin):
     @token.subcommand(name="list", help="List all [or specific] Tokens")
     @command.argument("token", required=False, pass_raw=True)
     async def list_tokens(self, event: MessageEvent, token: str) -> None:
-        if not self.authenticate(event.sender):
+        if not self.authenticate(event):
             await event.reply(error_msg_no_auth)
             return
         identifier = token.strip() if token else None
         ret, available_token = await self._get_token(
-            self.config["admin_api"], self.config["access_token"], identifier)
+            self.config["admin_api"], identifier)
         if not ret:
             await event.reply(_format_error_message(available_token))
             return
@@ -292,7 +372,7 @@ class TokenBot(Plugin):
                       required=False)
     async def generate_token(self, event: MessageEvent, uses: int,
                              expiry: int) -> None:
-        if not self.authenticate(event.sender):
+        if not self.authenticate(event):
             await event.reply(error_msg_no_auth)
             return
         if uses is None:
@@ -300,8 +380,7 @@ class TokenBot(Plugin):
         if expiry is None:
             expiry = self.config["default_expiry_time"]
         ret, available_token = await self._gen_token(
-            self.config["admin_api"], self.config["access_token"], uses,
-            expiry)
+            self.config["admin_api"], uses, expiry)
         msg = ""
         if ret:
             msg = parse_single_token(available_token)
@@ -312,13 +391,12 @@ class TokenBot(Plugin):
     @token.subcommand(name="delete", help="Delete a Token")
     @command.argument("token", required=True, pass_raw=True)
     async def delete_token(self, event: MessageEvent, token: str) -> None:
-        if not self.authenticate(event.sender):
+        if not self.authenticate(event):
             await event.reply(error_msg_no_auth)
             return
         identifier = token.strip()
         ret, token_resource = await self._get_token(
-            self.config["admin_api"], self.config["access_token"],
-            identifier)
+            self.config["admin_api"], identifier)
         if not ret:
             await event.reply(_format_error_message(token_resource))
             return
@@ -328,8 +406,7 @@ class TokenBot(Plugin):
                 f"Unable to determine resource ID for token '{identifier}'.")
             return
         ret, response = await self._revoke_token(
-            self.config["admin_api"], self.config["access_token"],
-            resource_id)
+            self.config["admin_api"], resource_id)
         if ret:
             await event.reply("Token revoked!\n" + parse_single_token(response))
         else:
@@ -339,13 +416,12 @@ class TokenBot(Plugin):
                       help="Unrevoke a previously revoked Token")
     @command.argument("token", required=True, pass_raw=True)
     async def unrevoke_token(self, event: MessageEvent, token: str) -> None:
-        if not self.authenticate(event.sender):
+        if not self.authenticate(event):
             await event.reply(error_msg_no_auth)
             return
         identifier = token.strip()
         ret, token_resource = await self._get_token(
-            self.config["admin_api"], self.config["access_token"],
-            identifier)
+            self.config["admin_api"], identifier)
         if not ret:
             await event.reply(_format_error_message(token_resource))
             return
@@ -355,8 +431,7 @@ class TokenBot(Plugin):
                 f"Unable to determine resource ID for token '{identifier}'.")
             return
         ret, response = await self._unrevoke_token(
-            self.config["admin_api"], self.config["access_token"],
-            resource_id)
+            self.config["admin_api"], resource_id)
         if ret:
             await event.reply("Token unrevoked!\n" +
                               parse_single_token(response))
