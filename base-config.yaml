@@ -1,7 +1,7 @@
 # Access Token of any Admin
 access_token: ""
-# Base Url for Synapse admin API
-admin_api: "http://synapse:8008/_synapse/admin"
+# Base URL for the MAS admin API (without the trailing /v1 portion)
+admin_api: "https://mas.example.com/api/admin"
 # Base command without the prefix (!).
 base_command: token
 # Default allowed uses per token
